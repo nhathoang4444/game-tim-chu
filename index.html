@@ -418,33 +418,62 @@ function findVietnameseVoice() {
 }
 
 function speak(text) {
-    if (!('speechSynthesis' in window)) return;
-    const synth = window.speechSynthesis;
-    let voice = findVietnameseVoice();
+    // Always return a Promise so game-round callbacks never crash when
+    // the device has no Vietnamese TTS voice.
+    return new Promise(resolve => {
+        if (!('speechSynthesis' in window)) {
+            resolve();
+            return;
+        }
 
-    // Some mobile browsers load voices shortly after page startup.
-    if (!voice) {
-        synth.addEventListener('voiceschanged', function retryVoice() {
-            synth.removeEventListener('voiceschanged', retryVoice);
-            const loadedVoice = findVietnameseVoice();
-            if (loadedVoice) speak(text);
-        }, { once: true });
-        showVietnameseVoiceWarning();
-        return; // Do not let the browser use its default (possibly Japanese) voice.
-    }
+        const synth = window.speechSynthesis;
+        const voice = findVietnameseVoice();
 
-    try {
-        synth.cancel();
-        const utterance = new SpeechSynthesisUtterance(text);
-        utterance.lang = 'vi-VN';
-        utterance.voice = voice;
-        utterance.rate = 0.82;
-        utterance.pitch = 1.12;
-        utterance.volume = 1;
-        synth.speak(utterance);
-    } catch (e) {
-        // Speech must never block the game interface.
-    }
+        if (!voice) {
+            // Voice lists can load after page startup. Never fall back to Japanese.
+            showVietnameseVoiceWarning();
+            const retryWhenReady = () => {
+                const loadedVoice = findVietnameseVoice();
+                if (!loadedVoice) return;
+                synth.removeEventListener('voiceschanged', retryWhenReady);
+                try {
+                    const utterance = new SpeechSynthesisUtterance(text);
+                    utterance.lang = 'vi-VN';
+                    utterance.voice = loadedVoice;
+                    utterance.rate = 0.82;
+                    utterance.pitch = 1.12;
+                    utterance.volume = 1;
+                    utterance.onend = resolve;
+                    utterance.onerror = resolve;
+                    synth.cancel();
+                    synth.speak(utterance);
+                } catch (e) {
+                    resolve();
+                }
+            };
+            synth.addEventListener('voiceschanged', retryWhenReady);
+            // Resolve now; game must continue even if voice loading never completes.
+            resolve();
+            return;
+        }
+
+        try {
+            synth.cancel();
+            const utterance = new SpeechSynthesisUtterance(text);
+            utterance.lang = 'vi-VN';
+            utterance.voice = voice;
+            utterance.rate = 0.82;
+            utterance.pitch = 1.12;
+            utterance.volume = 1;
+            utterance.onend = resolve;
+            utterance.onerror = resolve;
+            synth.speak(utterance);
+            // Safety fallback for mobile browsers that don't fire onend/onerror.
+            setTimeout(resolve, Math.max(2500, text.length * 160));
+        } catch (e) {
+            resolve();
+        }
+    });
 }
 
 function setSpeech(text, speaking = false) {
@@ -501,6 +530,7 @@ function buildGrid() {
 /* ════ TIMER ════ */
 const CIRCLE_LENGTH = 264; /* 2 * π * 42 */
 function startTimer() {
+    clearInterval(timerInterval);
     timeLeft = COUNTDOWN;
     const section = document.getElementById('timerSection');
     const circle = document.getElementById('timerCircle');
